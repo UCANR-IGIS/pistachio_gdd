@@ -1,0 +1,644 @@
+---
+title: "Pistachio GDD Nut Development Model"
+author: "Andy Lyons"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    toc: yes
+    toc_float: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(units)
+library(caladaptr)
+library(units)
+library(lubridate)
+library(httr)
+library(purrr)
+library(tibble)
+library(scales)
+library(sf)
+```
+
+
+```{css echo = FALSE}
+h1 {
+  font-weight:bold;
+  font-size:24px;
+}
+h2 {
+  font-weight:bold;
+  font-size:20px;
+}
+h3 {
+  font-weight:bold;
+  font-size:16px;
+  font-style:italic;
+}
+div.note {
+  margin:2em 2em;
+  border:2px solid darkred;
+  background-color:cornsilk;
+  padding:5px;
+}
+```
+
+This R notebook is a pre-cursor to a planned web app that will apply the pistachio nut development model for
+
+i) any location in California, and  
+ii) using a single set of weights per cultivar (i.e., not location specific)
+
+The goals of this notebook include:
+
+1) Write some R code that applies a growth model for Pistachio nut development based on accumulated thermal units. 
+
+2) Highlight questions for the research team
+
+# 1.0 Write the Prediction Function in R
+
+The research team developed a growth model for three measures of nut development:
+
+- volume  
+- embryo length  
+- firmness 
+
+The first task is to write the prediction function in R. The approach taken is to import the  weights as a CSV file. This will allow a single R function to predict growth for different cultivars and different development measures, based on the arguments passed. This will also make it easier to add weights for additional cultivars when those become ready).
+
+```{r}
+read.csv("gompertz_weights.csv", stringsAsFactors = FALSE, strip.white = TRUE) 
+```
+
+<div class="note">
+**Questions for the research team:**  
+
+1) This R notebook, and the proposed web app, is using *one* set of coefficients to predict growth. In other words they are not region or location specific. Is this OK?
+
+2) The weights above imported from the csv file were taken from a snippet of JavaScript code shared by Liyu (they're not published in the draft paper). Please verify these are the correct coefficients.
+
+</div>
+
+The prediction function is based on the Gompertz function:
+
+$$y(x)=asym*exp(-b*c^x)$$
+
+Where *y* is one of the nut development measures (shell volume, shell firmness, or embryo length), *x* is a measure of accumulated thermal units (measured in &#176;C), *asym* is a theoretical maximum (asymptote), and *b* and *c* are constants. Each measure of nut development has its own set of coefficients *asym*, *b*, and *c*.
+
+In R, I've written one function that can be used for any cultivar for which model weights have been calculated, and any of the three growth measures. You simply change the arguments. Note also that the results have the units encoded.
+
+```{r}
+library(dplyr, quiet = TRUE)
+library(units)
+my_varietal <- "kerman"
+
+nut_growth <- function(tu, 
+                       varietal = my_varietal, 
+                       measure = c("volume", "emb_len", "firmness")[1],
+                       return_weight = NULL) {
+  
+  ## return_weight is normally NULL, but it can be used to return one of the coefficients.
+  ## If passed, it should be the name of one of the coefficients ("symp", "b", or "c"). 
+  
+  weights_df <- read.csv("gompertz_weights.csv", stringsAsFactors = FALSE, strip.white = TRUE) 
+  
+  if (!varietal %in% weights_df$varietal) stop(paste0("Unknown value for varietal: ", varietal))
+  if (!measure %in% weights_df$measure) stop(paste0("Unknown value for measure: ", measure))
+  
+  weights_lst <- weights_df %>% 
+    dplyr::filter(varietal == .env$varietal, measure == .env$measure) %>% 
+    as.list()
+
+  if (is.null(return_weight)) {
+    set_units(weights_lst$asymp * exp(-weights_lst$b * weights_lst$c ^ as.numeric(tu)), 
+                     weights_lst$units, mode = "standard")
+  } else {
+    weights_lst[[return_weight]]
+  }
+}
+```
+
+## 1.1 Test the Prediction Function
+
+To check our prediction function, we will first apply it to a range of accumulated thermal units (0 - 2,500):
+
+```{r}
+## Thermal Units Since Flowering
+(tu_sincflwr <- seq(from = 0, to = 2500, by = 100))
+```
+
+Here we plot predicted nut **volume** as a function of accumulated thermal units:
+
+```{r}
+library(ggplot2)
+volume_sincflwr <- nut_growth(tu_sincflwr, varietal = my_varietal, measure = "volume")
+
+ggplot(data = data.frame(tu_sincflwr = tu_sincflwr, 
+                          volume_sincflwr = volume_sincflwr),
+       aes(x = tu_sincflwr, y = as.numeric(volume_sincflwr))) +
+  geom_line() +
+  ggtitle("Nut Volume as a Function of Thermal Units") +
+  xlab("Thermal Units Since Flowering") + 
+  ylab("Predicted volume (mm^3)")
+```
+
+Next we plot predicted **embryo length** as a function of accumulated thermal units:
+
+```{r}
+emb_len_sincflwr <- nut_growth(tu_sincflwr, varietal = my_varietal, measure = "emb_len")
+
+ggplot(data = data.frame(emb_len_sincflwr = emb_len_sincflwr, 
+                          volume_sincflwr = volume_sincflwr),
+       aes(x = tu_sincflwr, y = as.numeric(emb_len_sincflwr))) +
+  geom_line() +
+  ggtitle("Embryo Length as a Function of Thermal Units") +
+  xlab("Thermal Units Since Flowering") + 
+  ylab("Predicted Embryo Length (mm)")
+```
+
+Next we plot predicted **firmness** as a function of accumulated thermal units:
+
+```{r}
+firmness_sincflwr <- nut_growth(tu_sincflwr, varietal = my_varietal, measure = "firmness")
+
+ggplot(data = data.frame(firmness_sincflwr = firmness_sincflwr, 
+                          volume_sincflwr = volume_sincflwr),
+       aes(x = tu_sincflwr, y = as.numeric(firmness_sincflwr))) +
+  geom_line() +
+  ggtitle("Shell Firmness a Function of Thermal Units") +
+  xlab("Thermal Units Since Flowering") + 
+  ylab("Predicted Firmness (mm^2)")
+```
+
+# 2.0 Apply the Prediction Function to Historical Temperature Data
+
+Now that we have a function that models nut development, we can apply it to some actual data. We begin by looking at historic temperature data.
+
+## Pick a location
+
+First we select an arbitrary **location** in the central valley (in the web app, the user will enter their location):
+
+```{r}
+library(leaflet)
+
+pt_df <- data.frame(lng = -120.55, lat = 37.26) 
+
+leaflet(data = pt_df) %>% addTiles() %>% addMarkers()
+
+```
+
+## Import Historic Weather Data from Cal-Adapt
+
+<div class="note">
+**Question for the research team**
+
+Is there is a preferred source for historic temperature data? 
+
+There are dozens of companies that provide historic and forecast weather data. But it can be difficult to determine exactly how the data are generated, and what you're getting. For example -  are they grabbing the historic record from the nearest city or station? What range of years is being sampled? Has any cleaning or calibration been done?
+
+See also the note below about WorldWeatherOnline specficially.
+</div>
+
+In this notebook, we'll use the [Livneh](https://cal-adapt.org/data/livneh/) data from [Cal-Adapt](https://cal-adapt.org) for the historic data. This dataset is a series of downscaled rasters (6km) containing historic weather variables (1950-2013), including daily temp (min and max), precip, and derived variables. Livneh data are interpolated from actual observations ([Livneh et al 2015](https://doi.org/10.1038/sdata.2015.42)). Like all data on Cal-Adapt, this data has been reviewed and vetted under California's 4th Climate Change Assessment.
+
+In this analysis, we'll use 30 years of historic data. 
+
+```{r}
+library(caladaptr)
+library(units)
+
+## Create an API request for daily MAX temp
+hist_tasmax_cap <- ca_loc_pt(coords = pt_df) %>%
+  ca_slug("tasmax_day_livneh") %>% 
+  ca_years(start = 1981, end = 2010) 
+
+## Fetch data, convert units to degC
+hist_tasmax_tbl <- hist_tasmax_cap %>% 
+  ca_getvals_tbl() %>% 
+  mutate(temp_max = as.numeric(val) %>% set_units(degC)) %>% 
+  select(dt, temp_max)  
+  
+## Create an API request for daily MIN temp
+hist_tasmin_cap <- ca_loc_pt(coords = pt_df) %>%
+  ca_slug("tasmin_day_livneh") %>% 
+  ca_years(start = 1981, end = 2010) 
+
+## Fetch data
+hist_tasmin_tbl <- hist_tasmin_cap %>% 
+  ca_getvals_tbl() %>% 
+  mutate(temp_min = as.numeric(val) %>% set_units(degC)) %>% 
+  select(dt, temp_min) 
+
+## View a sample of the results
+hist_tasmax_tbl %>% slice(1:10)
+hist_tasmin_tbl %>% slice(1:10)
+```
+
+## Compute Historic Average GDD
+
+Next, we compute the daily thermal units per day (aka *growing degree day*), using the equation:
+
+$$tu = (temp_{max} + temp_{min}) / 2 - temp_{base}$$
+
+where $temp_{base}$ is the temperature below which no growth occurs (which for pistachios is 7&#176;C). We also remove negative tu values (because growth can't go backwards).
+
+<div class="note">
+**Question for the research team:**
+
+Is removing negative thermal units correct? This occurs when the daily temperature never surpasses the base temp.
+</div>
+
+```{r}
+## Compute Daily GDD
+base_temp <- set_units(7, degC)
+
+hist_tasminmax_tbl <- hist_tasmin_tbl %>%
+  left_join(hist_tasmax_tbl, by = "dt") %>% 
+  mutate(tu = pmax(set_units(0, degC), (temp_min + temp_max) / 2 - base_temp)) %>% 
+  select(dt, temp_min, temp_max, tu)
+
+head(hist_tasminmax_tbl)
+```
+
+Next, we compute the cumulative thermal units for a hypothetical date when 50% bloom is reached, and a hypothetical harvest date. We'll use **March 15** through **Sept 30** (in the web app, these values will be entered by the user).
+
+We have 30 years of historical data, so we'll compute the average tu for each day from March 15 through Sept 30, and use those daily averages for our historical tu accumulation curve for this specific location.
+
+```{r}
+start_dt <- as.Date("2021-03-15")
+end_dt <- as.Date("2021-09-30")
+
+## Compute the Julian date (day of the year 0..365) for the start and end date
+library(lubridate)
+start_jday <- yday(start_dt)
+end_jday <- yday(end_dt)
+
+hist_avgtu_tbl <- hist_tasminmax_tbl %>% 
+  mutate(jday = yday(as.Date(dt))) %>% 
+  filter(jday >= start_jday, jday <= end_jday) %>% 
+  group_by(jday) %>% 
+  summarise(mean_tu = mean(tu)) %>% 
+  mutate(tu_csum = as.numeric(cumsum(mean_tu)),
+         date_cur_yr = as.Date(jday - 1, origin = make_date(year = year(today()))))
+
+head(hist_avgtu_tbl)
+```
+
+Plot this over time:
+
+```{r}
+library(scales)
+ggplot(data = hist_avgtu_tbl, aes(x = date_cur_yr, y = as.numeric(tu_csum))) +
+  geom_line() +
+  xlab("Day") +
+  ylab("GDD") +
+  labs(title = "Historic Growing Degree Days for Pistachio",
+       subtitle = paste0("Location: ", pt_df$lng, ", ", pt_df$lat),
+       caption = "Data: Livneh daily min & max, 1981-2010. Base temp = 7C") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  scale_x_date(labels = date_format("%b")) 
+```
+
+## Predict Nut Development Based on Historic GDD
+
+Now that we have "actual" thermal units for the historic period, we can feed them into the nut growth model to compute the predicted growth measures:
+
+```{r}
+hist_measures_tbl <- hist_avgtu_tbl %>% 
+  mutate(volume = nut_growth(tu_csum, varietal = my_varietal, measure = "volume"),
+         emb_len = nut_growth(tu_csum, varietal = my_varietal, measure = "emb_len"),
+         firmness = nut_growth(tu_csum, varietal = my_varietal, measure = "firmness"))
+
+head(hist_measures_tbl)
+```
+
+Plot:
+
+```{r}
+ggplot(data = hist_measures_tbl,
+       aes(x = date_cur_yr, y = as.numeric(volume))) +
+  geom_line() +
+  geom_hline(yintercept = 0.9 * nut_growth(1, varietal = my_varietal, 
+                                     measure = "volume", return_weight = "asymp"),
+             color = "red") +
+  labs(title = "Predicted Nut Volume Based on Historic GDD",
+       subtitle = paste0("Location: ", pt_df$lng, ", ", pt_df$lat),
+       caption = "Data: Livneh daily min & max, 1981-2010. Base temp = 7C\nRed line represents the 90% asymptote") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  xlab("Calendar date") + 
+  ylab("Predicted volume (mm^3)")
+
+ggplot(data = hist_measures_tbl,
+       aes(x = date_cur_yr, y = as.numeric(emb_len))) +
+  geom_line() +
+  geom_hline(yintercept = 0.9 * nut_growth(1, varietal = my_varietal, 
+                                     measure = "emb_len", return_weight = "asymp"),
+             color = "red") +
+  labs(title = "Predicted Embryo Length Based on Historic GDD",
+       subtitle = paste0("Location: ", pt_df$lng, ", ", pt_df$lat),
+       caption = "Data: Livneh daily min & max, 1981-2010. Base temp = 7C\nRed line represents the 90% asymptote") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  xlab("Calendar date") + 
+  ylab("Predicted embryo length (mm)")
+
+ggplot(data = hist_measures_tbl,
+       aes(x = date_cur_yr, y = as.numeric(firmness))) +
+  geom_line() +
+  geom_hline(yintercept = 0.9 * nut_growth(1, varietal = my_varietal, 
+                                           measure = "firmness", return_weight = "asymp"),
+             color = "red") +
+  labs(title = "Predicted Firmness Based on Historic GDD",
+       subtitle = paste0("Location: ", pt_df$lng, ", ", pt_df$lat),
+       caption = "Data: Livneh daily min & max, 1981-2010. Base temp = 7C\nRed line represents the 90% asymptote") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  xlab("Calendar date") + 
+  ylab("Predicted firmness (mm^2)")
+```
+
+# 3.0 Use Temperature Data from the Current Season
+
+In this case, we query data from the current season from a weather data provider. Presumably, data from the current season will be the best measure of accumulated tu. Weather data providers also provide forecast temperatures for roughly 2 weeks.
+
+For this example, we will use weather data from [WorldWeatherOnline.com](https://www.worldweatheronline.com/developer/) (which is the data source for the [current app](https://pistachio.plantsciences.ucdavis.edu/)).
+
+<div class="note">
+**Questions for the Research Team**
+
+Questions / concerns about WorldWeatherOnline.com (and weather APIs in general):
+
+Data records on WWO seem to be based on point locations (cities), as opposed to continuous surfaces. You can query an arbitrary lat-long location but it will simply use the record for the nearest location. **Does that matter?**
+
+Temperature values are rounded to the nearest degree Celcius. **Does that matter?**
+
+The methodology used for their [Local History API](https://www.worldweatheronline.com/developer/api/docs/historical-weather-api.aspx) is not documented (may be proprietary?)
+
+</div>
+
+## Download recent daily temperature data
+
+First we grab the average temperature data at our selected location from the start date until today.
+
+WorldWeatherOnline only allows you to query 30-days at a time for historic data. So we use the following function that will take a date interval and break it up into slices that are < 30 days each.
+
+```{r}
+date_slices <- function(start_dt, end_dt, max_days = 30) {
+  intervals_midpoints_dt <- seq(from = start_dt, 
+                                to = end_dt, 
+                                by = max_days) %>% 
+     c(end_dt) %>% unique()
+
+  intervals_start_dt <- intervals_midpoints_dt[1:(length(intervals_midpoints_dt) - 1)]
+  intervals_end_dt <- (intervals_midpoints_dt[2:(length(intervals_midpoints_dt) - 1)] %>% 
+                          as.Date() - 1) %>% c(., end_dt)
+  data.frame(start_dt = format(intervals_start_dt, "%Y-%m-%d"),
+                             end_dt = format(intervals_end_dt, "%Y-%m-%d"))
+}
+```
+
+Query the WWO historic weather API, grabbing temperature values from the start date to yesterday:
+
+```{r}
+library(httr)
+library(sf)
+
+## Load my API key into memory
+load("wwo_apikey.RData")
+
+## Create a variable to save the results
+curseasn_hist_tbl <- NULL
+
+## Create the data frame of date slices
+(start_end_df <- date_slices(start_dt, Sys.Date() - 1, 30))
+
+for (i in 1:nrow(start_end_df)) {
+  wwo_hist_url <- paste0("https://api.worldweatheronline.com/premium/v1/past-weather.ashx?",
+                          "key=", wwo_key,
+                          "&date=", start_end_df[i, "start_dt"], 
+                          "&enddate=", start_end_df[i, "end_dt"],
+                          "&q=", pt_df$lat, ",", pt_df$lng, 
+                          "&format=json&tp=24&includelocation=yes")  
+  
+  wwo_hist_resp <- GET(wwo_hist_url)
+  
+  if (wwo_hist_resp$status_code == 200) {   
+    ## Success
+    wwo_hist_lst <- content(wwo_hist_resp)
+    
+    if (i == 1) {
+      ## For the first pass only, display some info about the weather data
+
+      ## View which point they are using for 
+      cat("WWO has returned the historic data from: ",
+      unlist(wwo_hist_lst$data$nearest_area[[1]]$areaName), "\n")
+      
+      cat(wwo_hist_lst$data$nearest_area[[1]]$weatherUrl[[1]]$value, "\n")
+
+      ## Compute the distance between our location and the weather station
+      both_pts_sf <- rbind(pt_df,
+                           data.frame(lng = as.numeric(wwo_hist_lst$data$nearest_area[[1]]$longitude), 
+                                      lat = as.numeric(wwo_hist_lst$data$nearest_area[[1]]$latitude))) %>% 
+        st_as_sf(coords = c("lng", "lat"), crs = 4326) %>% 
+        st_transform(3310) ## CA Albers
+        
+      pt2area_dist <- st_distance(both_pts_sf)[1,2]
+      
+      cat("Distance from our sample point to this weather area: ", 
+          round(pt2area_dist), "m \n", sep = "")
+      
+    }
+    
+    ## Grab the Average Daily Temp for this Time period  
+    tmps_this_period <- wwo_hist_lst$data$weather %>%
+      {tibble(
+        date = map_chr(., "date"),
+        avgtempC = map_chr(., "avgtempC")
+      )}
+  
+    ## Append these values to the global values
+    curseasn_hist_tbl <- rbind(curseasn_hist_tbl, tmps_this_period)
+
+  } else {
+    cat ("COULD NOT RETRIEVE HISTORICAL WEATHER DATA FROM WWO \n")
+  }
+
+}
+
+head(curseasn_hist_tbl)
+```
+
+## Download 14-Day Forecast Temperatures
+
+Next, we grab the predicted temperature for the next two weeks:
+
+```{r}
+wwo_forecast_url <- paste0("http://api.worldweatheronline.com/premium/v1/weather.ashx?",
+                           "key=", wwo_key,
+                           "&q=", pt_df$lat, ",", pt_df$lng,
+                           "&num_of_days=14&fx=yes&format=json&tp=24&cc=no&mca=no&includelocation=yes")
+
+wwo_forecast_resp <- GET(wwo_forecast_url)
+
+if (wwo_forecast_resp$status_code == 200) {
+  ## Parse the content
+  wwo_forecast_lst <- content(wwo_forecast_resp)
+  
+  ## Display which point they are using for 
+  
+  cat("WWO has returned the 14-day forecast data from: ",
+      unlist(wwo_forecast_lst$data$nearest_area[[1]]$areaName), "\n")
+  
+  cat(wwo_forecast_lst$data$nearest_area[[1]]$weatherUrl[[1]]$value, "\n")
+      
+  ## Compute the distance between our location and the weather station
+  both_pts_sf <- rbind(pt_df,
+                       data.frame(lng = as.numeric(wwo_forecast_lst$data$nearest_area[[1]]$longitude), 
+                                  lat = as.numeric(wwo_forecast_lst$data$nearest_area[[1]]$latitude))) %>% 
+    st_as_sf(coords = c("lng", "lat"), crs = 4326) %>% 
+    st_transform(3310) ## CA Albers
+  
+  pt2area_dist <- st_distance(both_pts_sf)[1,2]
+  
+  cat("Distance from our sample point to this weather area: ", 
+      round(pt2area_dist), "m \n", sep = "")
+  
+  ## Grab the temperature values    
+  curseasn_forecst_tbl <- wwo_forecast_lst$data$weather %>%
+    {tibble(
+      date = map_chr(., "date"),
+      avgtempC = map_chr(., "avgtempC")
+    )}
+
+  head(curseasn_forecst_tbl)
+  
+} else {
+  cat("COULD NOT RETRIEVE 14-DAY FORECAST FROM WWO \n")
+}
+```
+
+## Compute GDD for the current season
+
+Now we have a complete record of daily average temperature from the start date to 14-days out.
+
+Compute the thermal units for pistachio:
+
+```{r}
+(base_temp_int <- as.numeric(base_temp))
+
+curseason_all_tbl <- curseasn_hist_tbl %>% 
+  bind_rows(curseasn_forecst_tbl) %>% 
+  mutate(date = as.Date(date),
+         avgtempC = as.numeric(avgtempC))
+
+curseason_tu_tbl <- curseason_all_tbl %>% 
+  mutate(tu = pmax(0, avgtempC - base_temp_int)) %>% 
+  mutate(tu_csum = cumsum(tu))
+
+curseason_tu_tbl
+```
+
+Let's compare this season's TU accumulation with the historic baseline:
+
+```{r}
+## Prepare a tibble with both the historic and current seasons tu accumulation
+
+hist_curseasn_tu_tbl <- 
+  (hist_avgtu_tbl %>%
+     rename(date = date_cur_yr) %>% 
+     mutate(source = "Historic") %>% 
+     select(date, source, tu_csum)) %>% 
+  bind_rows(
+    curseason_tu_tbl %>%
+      mutate(source = "Current Season") %>% 
+      select(date, source, tu_csum)
+    )
+
+ggplot(data = hist_curseasn_tu_tbl, aes(x = date, y = tu_csum, color = source)) +
+  geom_line() +
+  xlab("Day") +
+  ylab("GDD") +
+  labs(title = paste0("Growing Degree Days for Pistachio - ", year(Sys.Date())), 
+       subtitle =paste0("Location: ", pt_df$lng, ", ", pt_df$lat),
+       caption = "Data: World Weather Online (current season), Livneh data 1981-2010 (historic)") +
+  theme(plot.caption = element_text(hjust = 0))
+
+```
+
+## Predict Nut Development to Date
+
+Now we can apply the growth model for the current season's data:
+
+```{r}
+curseason_nutdev_tbl <- curseason_tu_tbl %>% 
+  mutate(volume = nut_growth(tu_csum, varietal = my_varietal, measure = "volume"),
+         emb_len = nut_growth(tu_csum, varietal = my_varietal, measure = "emb_len"),
+         firmness = nut_growth(tu_csum, varietal = my_varietal, measure = "firmness")) %>% 
+  select(date, tu_csum, volume, emb_len, firmness)
+  
+head(curseason_nutdev_tbl)
+```
+
+Plot:
+
+```{r}
+## VOLUME
+ggplot(data = curseason_nutdev_tbl,
+       aes(x = date, y = as.numeric(volume))) +
+  geom_line() +
+  geom_hline(yintercept = 0.9 * nut_growth(1, varietal = my_varietal, 
+                                     measure = "volume", return_weight = "asymp"),
+             color = "red") +
+  labs(title = paste0("Predicted Nut Volume: ", year(Sys.Date())),
+       subtitle = paste0("Location: ", pt_df$lng, ", ", pt_df$lat),
+       caption = "Data: World Weather Online\nRed line represents the 90% asymptote") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  xlab("Date") + 
+  ylab("Predicted volume (mm^3)")
+```
+
+
+```{r}
+## EMB LENGTH
+ggplot(data = curseason_nutdev_tbl,
+       aes(x = date, y = as.numeric(emb_len))) +
+  geom_line() +
+  geom_hline(yintercept = 0.9 * nut_growth(1, varietal = my_varietal, 
+                                     measure = "emb_len", return_weight = "asymp"),
+             color = "red") +
+  labs(title = paste0("Predicted Embryo Length: ", year(Sys.Date())),
+       subtitle = paste0("Location: ", pt_df$lng, ", ", pt_df$lat),
+       caption = "Data: World Weather Online\nRed line represents the 90% asymptote") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  xlab("Date") + 
+  ylab("Predicted embryo length (mm)")
+```
+
+
+```{r}
+## FIRMNESS
+ggplot(data = curseason_nutdev_tbl,
+       aes(x = date, y = as.numeric(firmness))) +
+  geom_line() +
+  geom_hline(yintercept = 0.9 * nut_growth(1, varietal = my_varietal, 
+                                           measure = "firmness", return_weight = "asymp"),
+             color = "red") +
+  labs(title = paste0("Predicted Firmness: ", year(Sys.Date())), 
+       subtitle = paste0("Location: ", pt_df$lng, ", ", pt_df$lat),
+       caption = "Data: World Weather Online\nRed line represents the 90% asymptote") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  xlab("Date") + 
+  ylab("Predicted firmness (mm^2)")
+```
+
+# 4.0 Use a combination of temperature data from this season and historic data
+
+If the end date (i.e. harvest date) is more than 2 weeks out, we can't use local weather data for the entire time frame. In this case we must fill in the 'missing values' with historic data.
+
+<div class="note">
+**Question for the research team:**
+
+What is the preferred method for filling in future temperature data beyond the range of a 14-day weather forecast? 
+
+The current app applies the monthly average historic tu accumulation for every day after the two-week forecast. So for example every day in July will be presumed to have the same thermal accumulation based on the monthly avg temp for July. Should we continue with this?
+</div>
+
